@@ -14,36 +14,22 @@
 
 import Foundation
 import TensorFlow
-import Python
 import Datasets
-
-// Import Python modules
-let matplotlib = Python.import("matplotlib")
-let np = Python.import("numpy")
-
-// Use the AGG renderer for saving images to disk.
-matplotlib.use("Agg")
-
-let plt = Python.import("matplotlib.pyplot")
+import ModelSupport
 
 let epochCount = 10
 let batchSize = 100
-let outputFolder = "./output/"
 let imageHeight = 28, imageWidth = 28
 
-func plot(image: [Float], name: String) {
-    // Create figure
-    let ax = plt.gca()
-    let array = np.array([image])
-    let pixels = array.reshape([imageHeight, imageWidth])
-    if !FileManager.default.fileExists(atPath: outputFolder) {
-        try! FileManager.default.createDirectory(atPath: outputFolder,
-                            withIntermediateDirectories: false,
-                                             attributes: nil)
-    }
-    ax.imshow(pixels, cmap: "gray")
-    plt.savefig("\(outputFolder)\(name).png", dpi: 300)
-    plt.close()
+let outputFolder = "./output/"
+
+func saveTensorToImage(_ tensor: Tensor<Float>, name: String) {
+    createDirectoryIfMissing(path: outputFolder)
+    
+    let reshapedTensor = tensor.reshaped(to: [imageHeight, imageWidth, 1])
+    let image = Image(tensor: reshapedTensor)
+    let outputURL = URL(fileURLWithPath:"\(outputFolder)\(name).jpg")
+    image.save(to: outputURL)
 }
 
 /// An autoencoder.
@@ -79,8 +65,8 @@ for epoch in 1...epochCount {
     let sampleImage = Tensor(shape: [1, imageHeight * imageWidth], scalars: dataset.trainingImages[epoch].scalars)
     let testImage = autoencoder(sampleImage)
 
-    plot(image: sampleImage.scalars, name: "epoch-\(epoch)-input")
-    plot(image: testImage.scalars, name: "epoch-\(epoch)-output")
+    saveTensorToImage(sampleImage, name: "epoch-\(epoch)-input")
+    saveTensorToImage(testImage, name: "epoch-\(epoch)-output")
 
     let sampleLoss = meanSquaredError(predicted: testImage, expected: sampleImage)
     print("[Epoch: \(epoch)] Loss: \(sampleLoss)")
