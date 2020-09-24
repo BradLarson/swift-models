@@ -16,24 +16,24 @@
 import Foundation
 import SwiftRT
 
-func mandelbrotSet(
+func pmapJuliaSet(
     iterations: Int,
+    constant C: Complex<Float>,
     tolerance: Float,
     range: ComplexRange,
     size: ImageSize
 ) -> Tensor2 {
-    let X = array(from: range.start, to: range.end, size)
+    var Z = array(from: range.start, to: range.end, size)
     var divergence = full(size, iterations)
-    var Z = X
-
-    print("rows: \(size[0]), cols: \(size[1]), iterations: \(iterations)")
-    let start = Date()
-
-    for i in 1..<iterations {
-        divergence[abs(Z) .> tolerance] = min(divergence, i)
-        Z = multiply(Z, Z, add: X)
-    }
     
-    print("elapsed \(String(format: "%.3f", Date().timeIntervalSince(start))) seconds")
+    measureTime {
+        pmap(&Z, &divergence) { Z, divergence in
+            print("\(Context.currentQueue.name)", Z.storageBase, divergence.storageBase)
+            for i in 0..<1 {
+                Z = multiply(Z, Z, add: C)
+                divergence[abs(Z) .> tolerance] = min(divergence, i)
+            }
+        }
+    }
     return divergence
 }

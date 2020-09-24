@@ -14,50 +14,48 @@
 
 import ArgumentParser
 import ModelSupport
-import TensorFlow
+import SwiftRT
 
-struct ImageSize {
-  let width: Int
-  let height: Int
-}
+public typealias ImageSize = Shape2
 
 extension ImageSize: ExpressibleByArgument {
-  init?(argument: String) {
-    let subArguments = argument.split(separator: ",").compactMap { Int(String($0)) }
-    guard subArguments.count >= 2 else { return nil }
-
-    self.width = subArguments[0]
-    self.height = subArguments[1]
-  }
-
-  var defaultValueDescription: String {
-    "\(self.width) \(self.height)"
-  }
+    public init(rows: Int, cols: Int) {
+        self.init(rows, cols)
+    }
+    
+    public init?(argument: String) {
+        let subArguments = argument.split(separator: ",").compactMap { Int(String($0)) }
+        guard subArguments.count >= 2 else { return nil }
+        self.init(rows: subArguments[0], cols: subArguments[1])
+    }
+    
+    public var defaultValueDescription: String {
+        "\(self[0]) \(self[1])"
+    }
 }
 
 fileprivate func prismColor(_ value: Float, iterations: Int) -> [Float] {
-  guard value < Float(iterations) else { return [0.0, 0.0, 0.0] }
-
-  let normalizedValue = value / Float(iterations)
-
-  // Values drawn from Matplotlib: https://github.com/matplotlib/matplotlib/blob/master/lib/matplotlib/_cm.py
-  let red = (0.75 * sinf((normalizedValue * 20.9 + 0.25) * Float.pi) + 0.67) * 255
-  let green = (0.75 * sinf((normalizedValue * 20.9 - 0.25) * Float.pi) + 0.33) * 255
-  let blue = (-1.1 * sinf((normalizedValue * 20.9) * Float.pi)) * 255
-  return [red, green, blue]
+    guard value < Float(iterations) else { return [0.0, 0.0, 0.0] }
+    
+    let normalizedValue = value / Float(iterations)
+    
+    // Values drawn from Matplotlib: https://github.com/matplotlib/matplotlib/blob/master/lib/matplotlib/_cm.py
+    let red = (0.75 * .sin((normalizedValue * 20.9 + 0.25) * Float.pi) + 0.67) * 255
+    let green = (0.75 * .sin((normalizedValue * 20.9 - 0.25) * Float.pi) + 0.33) * 255
+    let blue = (-1.1 * .sin((normalizedValue * 20.9) * Float.pi)) * 255
+    return [red, green, blue]
 }
 
-func saveFractalImage(_ divergenceGrid: Tensor<Float>, iterations: Int, fileName: String) throws {
-  let gridShape = divergenceGrid.shape
-
-  let colorValues: [Float] = divergenceGrid.scalars.reduce(into: []) {
-    $0 += prismColor($1, iterations: iterations)
-  }
-  let colorImage = Tensor<Float>(
-    shape: [gridShape[0], gridShape[1], 3], scalars: colorValues, on: divergenceGrid.device)
-
-  try saveImage(
-    colorImage, shape: (gridShape[0], gridShape[1]),
-    format: .rgb, directory: "./", name: fileName,
-    quality: 95)
+func saveFractalImage(_ divergenceGrid: Tensor2, iterations: Int, fileName: String) throws {
+    let colorValues: [Float] = divergenceGrid.flatArray.reduce(into: []) {
+        $0 += prismColor($1, iterations: iterations)
+    }
+    // colorImage
+    let gridShape = divergenceGrid.shape
+    let _ = array(colorValues, (gridShape[0], gridShape[1], 3))
+    
+//    try saveImage(
+//        colorImage, shape: (gridShape[0], gridShape[1]),
+//        format: .rgb, directory: "./", name: fileName,
+//        quality: 95)
 }
