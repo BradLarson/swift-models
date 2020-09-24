@@ -20,7 +20,7 @@ let package = Package(
     targets: [
         .target(name: "STBImage", path: "Support/STBImage"),
         .target(
-            name: "ModelSupport", dependencies: ["STBImage"], path: "Support",
+            name: "ModelSupport", dependencies: ["STBImage", "SwiftRT"], path: "Support",
             exclude: ["STBImage"]),
        .target(
            name: "Fractals",

@@ -35,7 +35,7 @@ extension ImageSize: ExpressibleByArgument {
 }
 
 fileprivate func prismColor(_ value: Float, iterations: Int) -> [Float] {
-    guard value < Float(iterations) else { return [0.0, 0.0, 0.0] }
+    guard value < Float(iterations) else { return [0.0, 0.0, 0.0, 255.0] }
     
     let normalizedValue = value / Float(iterations)
     
@@ -43,19 +43,20 @@ fileprivate func prismColor(_ value: Float, iterations: Int) -> [Float] {
     let red = (0.75 * .sin((normalizedValue * 20.9 + 0.25) * Float.pi) + 0.67) * 255
     let green = (0.75 * .sin((normalizedValue * 20.9 - 0.25) * Float.pi) + 0.33) * 255
     let blue = (-1.1 * .sin((normalizedValue * 20.9) * Float.pi)) * 255
-    return [red, green, blue]
+    let alpha: Float = 255.0
+    return [red, green, blue, alpha]
 }
 
 func saveFractalImage(_ divergenceGrid: Tensor2, iterations: Int, fileName: String) throws {
     let colorValues: [Float] = divergenceGrid.flatArray.reduce(into: []) {
         $0 += prismColor($1, iterations: iterations)
     }
-    // colorImage
     let gridShape = divergenceGrid.shape
-    let _ = array(colorValues, (gridShape[0], gridShape[1], 3))
+    print("Grid shape: \(gridShape)")
+    let colorImage = array(colorValues, (gridShape[0], gridShape[1], 4))
     
-//    try saveImage(
-//        colorImage, shape: (gridShape[0], gridShape[1]),
-//        format: .rgb, directory: "./", name: fileName,
-//        quality: 95)
+    try saveImage(
+        colorImage, shape: (gridShape[0], gridShape[1]),
+        colorspace: .rgba, directory: "./", name: fileName,
+        format: .png)
 }

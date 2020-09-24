@@ -82,19 +82,19 @@ extension FractalCommand {
         
         func run() throws {
             // select the device
-            Context.log.level = .diagnostic
+//            Context.log.level = .diagnostic
             if parameters.gpu { use(device: 1) }            
 
-            if parameters.pmap {
-                Context.cpuQueueCount = ProcessInfo().activeProcessorCount
-            }
+//            if parameters.pmap {
+//                Context.cpuQueueCount = ProcessInfo().activeProcessorCount
+//            }
             
             let region = parameters.region ??
                 ComplexRange(Complex<Float>(-1.7, -1.7), Complex<Float>(1.7, 1.7))
             let iterations = parameters.iterations ?? 200
             let size = parameters.ImageSize ?? ImageSize(rows: 1030, cols: 1030)
             
-            print("ImageSize(r: \(size[0]), c: \(size[1])) iterations: \(iterations) queue: \(Context.currentQueue.name)")
+            //print("ImageSize(r: \(size[0]), c: \(size[1])) iterations: \(iterations) queue: \(Context.currentQueue.name)")
 
             let divergenceGrid: Tensor2
             if parameters.pmap {
@@ -137,9 +137,9 @@ extension FractalCommand {
         func run() throws {
             if parameters.gpu { use(device: 1) }
             
-            if parameters.pmap {
-                Context.cpuQueueCount = ProcessInfo().activeProcessorCount
-            }
+//            if parameters.pmap {
+//                Context.cpuQueueCount = ProcessInfo().activeProcessorCount
+//            }
 
             let region = parameters.region ??
                 ComplexRange(Complex<Float>(-2.0, -1.3), Complex<Float>(1.0, 1.3))

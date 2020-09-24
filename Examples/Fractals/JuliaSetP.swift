@@ -27,13 +27,13 @@ func pmapJuliaSet(
     var divergence = full(size, iterations)
     
     measureTime {
-        pmap(&Z, &divergence) { Z, divergence in
-            print("\(Context.currentQueue.name)", Z.storageBase, divergence.storageBase)
-            for i in 0..<1 {
-                Z = multiply(Z, Z, add: C)
-                divergence[abs(Z) .> tolerance] = min(divergence, i)
-            }
-        }
+//        pmap(&Z, &divergence) { Z, divergence in
+//            print("\(Context.currentQueue.name)", Z.storageBase, divergence.storageBase)
+//            for i in 0..<1 {
+//                Z = multiply(Z, Z, add: C)
+//                divergence[abs(Z) .> tolerance] = min(divergence, i)
+//            }
+//        }
     }
     return divergence
 }
