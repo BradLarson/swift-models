@@ -52,7 +52,6 @@ func saveFractalImage(_ divergenceGrid: Tensor2, iterations: Int, fileName: Stri
         $0 += prismColor($1, iterations: iterations)
     }
     let gridShape = divergenceGrid.shape
-    print("Grid shape: \(gridShape)")
     let colorImage = array(colorValues, (gridShape[0], gridShape[1], 4))
     
     try saveImage(

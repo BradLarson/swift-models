@@ -37,12 +37,39 @@ func mandelbrotSet(
 
     print("rows: \(size[0]), cols: \(size[1]), iterations: \(iterations)")
     let start = Date()
-
-    for i in 1..<iterations {
-        divergence[abs(Z) .> tolerance] = min(divergence, i)
-        Z = multiply(Z, Z, add: X)
+    pmap(Z, X, &divergence) { Z, X, divergence in
+        for i in 1..<iterations {
+            divergence[abs(Z) .> tolerance] = min(divergence, i)
+            Z = multiply(Z, Z, add: X)
+        }
     }
     
+//    pmap(Z, X, &divergence, boundBy: .compute) {
+//        mandelbrotKernel(Z: $0, X: $1, divergence: &$2, tolerance, iterations)
+//    }
+
     print("elapsed \(String(format: "%.3f", Date().timeIntervalSince(start))) seconds")
     return divergence
+}
+
+@inlinable public func mandelbrotKernel<E>(
+    Z: TensorR2<Complex<E>>,
+    X: TensorR2<Complex<E>>,
+    divergence: inout TensorR2<E>,
+    _ tolerance: E,
+    _ iterations: Int
+) {
+    let message =
+        "mandelbrot(Z: \(Z.name), divergence: \(divergence.name), X: \(X.name), " +
+        "tolerance: \(tolerance), iterations: \(iterations))"
+
+    kernel(Z, &divergence, message) {
+        var Z = $0, d = $1
+        for i in 0..<iterations {
+//            Z = Z * Z + X
+            Z = Z * Z + Complex(1.0, 0.0)
+            if abs(Z) > tolerance { d = min(d, E.Value(exactly: i)!) }
+        }
+        return d
+    }
 }

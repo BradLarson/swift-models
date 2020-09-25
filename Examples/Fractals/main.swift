@@ -146,7 +146,7 @@ extension FractalCommand {
 
             let divergenceGrid = mandelbrotSet(
                 iterations: parameters.iterations ?? 200,
-                tolerance: parameters.tolerance ?? 4.0,
+                tolerance: parameters.tolerance ?? 2.0,
                 range: region.imaginaryReversed,
                 size: parameters.ImageSize ?? ImageSize(rows: 1024, cols: 1024))
             
