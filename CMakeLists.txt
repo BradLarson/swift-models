@@ -1,13 +1,8 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.17)
 project(Models
   LANGUAGES C Swift)
 
-if(CMAKE_VERSION VERSION_LESS 3.17)
-  if(NOT CMAKE_SYSTEM_NAME STREQUAL Windows)
-    set(CMAKE_EXECUTABLE_RUNTIME_Swift_FLAG "-Xlinker -rpath -Xlinker ")
-    set(CMAKE_EXECUTABLE_RUNTIME_Swift_FLAG_SEP "")
-  endif()
-endif()
+option(SWIFTRT_ENABLE_CUDA "Enable CUDA Support" NO)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules)
 
@@ -103,13 +98,21 @@ ExternalProject_Add(swift-rt
     -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
     -DCMAKE_Swift_COMPILER=${CMAKE_Swift_COMPILER}
     -DCMAKE_Swift_FLAGS=${CMAKE_Swift_FLAGS}
-    -DBUILD_EXAMPLES=NO
     -DBUILD_TESTING=NO
+    -DSWIFTRT_ENABLE_CUDA=${SWIFTRT_ENABLE_CUDA}
   INSTALL_COMMAND
     COMMAND
-      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/${CMAKE_SHARED_LIBRARY_PREFIX}SwiftRTCuda${CMAKE_SHARED_LIBRARY_SUFFIX} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
+      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}SwiftRT${CMAKE_SHARED_LIBRARY_SUFFIX} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}SwiftRTCore${CMAKE_SHARED_LIBRARY_SUFFIX} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}SwiftRTLayers${CMAKE_SHARED_LIBRARY_SUFFIX} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
     COMMAND
       ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/swift/SwiftRT.swiftmodule ${CMAKE_Swift_MODULE_DIRECTORY}/
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/swift/SwiftRTCore.swiftmodule ${CMAKE_Swift_MODULE_DIRECTORY}/
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different <BINARY_DIR>/swift/SwiftRTLayers.swiftmodule ${CMAKE_Swift_MODULE_DIRECTORY}/
     COMMAND
       ${_copy_swiftrt_import_library}
   BUILD_BYPRODUCTS
@@ -124,8 +127,62 @@ set_target_properties(SwiftRT PROPERTIES
   IMPORTED_LOCATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${CMAKE_SHARED_LIBRARY_PREFIX}SwiftRT${CMAKE_SHARED_LIBRARY_SUFFIX}
   IMPORTED_IMPLIB ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/${CMAKE_IMPORT_LIBRARY_PREFIX}SwiftRT${CMAKE_IMPORT_LIBRARY_SUFFIX}
   INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_Swift_MODULE_DIRECTORY})
-add_dependencies(SwiftRT swiftrt-install)
+add_dependencies(SwiftRT swift-rt-install)
 
+function(import_module module_name build_dir build_target)
+  add_library(${module_name} IMPORTED UNKNOWN)
+  if(CMAKE_SYSTEM_NAME STREQUAL Windows)
+    set_target_properties(${module_name} PROPERTIES
+      IMPORTED_IMPLIB ${build_dir}/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}${module_name}${CMAKE_IMPORT_LIBRARY_SUFFIX}
+      INTERFACE_INCLUDE_DIRECTORIES ${build_dir}/swift)
+  else()
+    set_target_properties(${module_name} PROPERTIES
+      IMPORTED_LOCATION ${build_dir}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}${module_name}${CMAKE_SHARED_LIBRARY_SUFFIX}
+      INTERFACE_INCLUDE_DIRECTORIES ${build_dir}/swift)
+  endif()
+  add_dependencies(${module_name} ${build_target})
+endfunction()
+
+## swift-numerics
+ExternalProject_Add(swift-numerics
+  GIT_REPOSITORY
+    git://github.com/apple/swift-numerics
+  GIT_TAG
+    master
+  CMAKE_ARGS
+    -D BUILD_SHARED_LIBS=YES
+    -D BUILD_TESTING=NO
+    -D CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -D CMAKE_Swift_COMPILER=${CMAKE_Swift_COMPILER}
+    -D CMAKE_Swift_COMPILER_TARGET=${CMAKE_Swift_COMPILER_TARGET}
+    -D CMAKE_Swift_FLAGS=${CMAKE_Swift_FLAGS}
+  INSTALL_COMMAND
+    ""
+  BUILD_BYPRODUCTS
+    <BINARY_DIR>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}Numerics${CMAKE_SHARED_LIBRARY_SUFFIX}
+    <BINARY_DIR>/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}Numerics${CMAKE_IMPORT_LIBRARY_SUFFIX}
+  UPDATE_DISCONNECTED
+    TRUE
+  STEP_TARGETS
+    build)
+ExternalProject_Get_Property(swift-numerics BINARY_DIR)
+ExternalProject_Get_Property(swift-numerics SOURCE_DIR)
+
+file(MAKE_DIRECTORY ${BINARY_DIR}/swift)
+file(MAKE_DIRECTORY ${SOURCE_DIR}/Sources/_NumericsShims/include)
+
+import_module(Numerics ${BINARY_DIR} swift-numerics-build)
+import_module(ComplexModule ${BINARY_DIR} swift-numerics-build)
+import_module(RealModule ${BINARY_DIR} swift-numerics-build)
+
+add_library(_NumericsShims IMPORTED INTERFACE)
+set_target_properties(_NumericsShims PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES ${SOURCE_DIR}/Sources/_NumericsShims/include)
+add_dependencies(_NumericsShims swift-numerics-build)
+
+set_target_properties(Numerics PROPERTIES
+  INTERFACE_LINK_DIRECTORIES ${BINARY_DIR}/lib
+  INTERFACE_LINK_LIBRARIES _NumericsShims)
 
 add_subdirectory(Support)
 add_subdirectory(Examples)

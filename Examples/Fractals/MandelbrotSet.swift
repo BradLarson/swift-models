@@ -37,12 +37,12 @@ func mandelbrotSet(
 
     print("rows: \(size[0]), cols: \(size[1]), iterations: \(iterations)")
     let start = Date()
-    pmap(Z, X, &divergence) { Z, X, divergence in
-        for i in 1..<iterations {
-            divergence[abs(Z) .> tolerance] = min(divergence, i)
-            Z = multiply(Z, Z, add: X)
-        }
-    }
+    // pmap(Z, X, &divergence) { Z, X, divergence in
+    //     for i in 1..<iterations {
+    //         divergence[abs(Z) .> tolerance] = min(divergence, i)
+    //         Z = multiply(Z, Z, add: X)
+    //     }
+    // }
     
 //    pmap(Z, X, &divergence, boundBy: .compute) {
 //        mandelbrotKernel(Z: $0, X: $1, divergence: &$2, tolerance, iterations)
