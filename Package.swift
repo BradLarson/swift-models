@@ -155,6 +155,11 @@ let package = Package(
            name: "GrowingNeuralCellularAutomata",
            dependencies: ["ArgumentParser", "ModelSupport"],
            path: "Examples/GrowingNeuralCellularAutomata"
+       ),
+       .target(
+           name: "Physarum",
+           dependencies: ["ArgumentParser", "ModelSupport"],
+           path: "Examples/Physarum"
        )
     ]
 )
