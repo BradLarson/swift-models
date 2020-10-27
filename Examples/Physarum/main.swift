@@ -16,7 +16,7 @@ import Foundation
 import ModelSupport
 import TensorFlow
 
-let stepCount = 50
+let stepCount = 100
 let gridSize = 512
 let particleCount = 1024
 let senseAngle = 0.20 * Float.pi
@@ -35,12 +35,41 @@ var headings = Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 *
 let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)])
 let scatterValues = Tensor<Float>(ones: [particleCount], on: device)
 
+extension Tensor where Scalar: Numeric {
+  func mask(condition: (Tensor) -> Tensor<Bool>) -> Tensor {
+    let satisfied = condition(self)
+    return Tensor(zerosLike: self)
+      .replacing(with: Tensor(onesLike: self), where: satisfied)
+  }
+}
+
+func angleToVector(_ angle: Tensor<Float>) -> Tensor<Float> {
+  return Tensor(stacking: [cos(angle), sin(angle)], alongAxis: -1)
+}
+
 func step(phase: Int) {
   var currentGrid = grid[phase]
+  // Perceive
+  let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3]) + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
+  let sensingOffset = angleToVector(senseDirection) * senseDistance
+  let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
+  // TODO: This wrapping around negative values needs to be fixed.
+  let sensingIndices = abs(Tensor<Int32>(sensingPosition)) % gridShape
+  let sensedValues = currentGrid.expandingShape(at: 2).dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
+  
   // Move
+  let lowValues = sensedValues.argmin(squeezingAxis: -1)
+  let highValues = sensedValues.argmax(squeezingAxis: -1)
+  let middleMask = lowValues.mask { $0 .== 1 }
+  let middleDistribution = Tensor<Float>(randomUniform: [particleCount], on: device)
+  let randomTurn = middleDistribution.mask { $0 .< 0.1 } * Tensor<Float>(middleMask)
+  let turn = Tensor<Float>(highValues - 1) * Tensor<Float>(1 - middleMask) + randomTurn
+  headings += (turn * moveAngle)
+  positions += angleToVector(headings) * moveStep
   
   // Deposit
-  let depositIndices = Tensor<Int32>(positions) % gridShape
+  // TODO: This wrapping around negative values needs to be fixed.
+  let depositIndices = abs(Tensor<Int32>(positions)) % gridShape
   let deposits = scatterValues.dimensionScattering(atIndices: depositIndices, shape: gridShape)
   currentGrid += deposits
   
@@ -48,16 +77,21 @@ func step(phase: Int) {
   currentGrid = currentGrid.expandingShape(at: 0).expandingShape(at: 3)
   currentGrid = currentGrid.padded(forSizes: [(0, 0), (1, 1), (1, 1), (0, 0)], mode: .reflect)
   currentGrid = avgPool2D(currentGrid, filterSize: (1, 3, 3, 1), strides: (1, 1, 1, 1), padding: .valid)
-  currentGrid = currentGrid * evaporationRate / 9.0
+  currentGrid = currentGrid * evaporationRate
   grid[1 - phase] = currentGrid.squeezingShape(at: 3).squeezingShape(at: 0)
 }
+
+let start = Date()
 
 var steps: [Tensor<Float>] = []
 for stepIndex in 0..<stepCount {
   print("Step: \(stepIndex)")
   step(phase: stepIndex % 2)
   LazyTensorBarrier()
-  steps.append(grid[0].expandingShape(at: 2).broadcasted(to: [gridSize, gridSize, 3]) * 255.0)
+  steps.append(grid[0].expandingShape(at: 2) * 255.0)
 }
+
+print("Total calculation time: \(String(format: "%.4f", Date().timeIntervalSince(start))) seconds")
+
 
 try steps.saveAnimatedImage(directory: "output", name: "physarum", delay: 1)
