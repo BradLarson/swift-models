@@ -25,6 +25,7 @@ let evaporationRate: Float = 0.95
 let moveAngle = 0.1 * Float.pi
 let moveStep: Float = 2.0
 let channelSize = 1
+let captureImage = true
 
 let device = Device.defaultTFEager
 // let device = Device.defaultXLA
@@ -32,7 +33,7 @@ let device = Device.defaultTFEager
 var grid = Tensor<Float>(zeros: [2, gridSize, gridSize], on: device)
 var positions = Tensor<Float>(randomUniform: [particleCount, 2], on: device) * Float(gridSize)
 var headings = Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi
-let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)])
+let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)], on: device)
 let scatterValues = Tensor<Float>(ones: [particleCount], on: device)
 
 extension Tensor where Scalar: Numeric {
@@ -50,12 +51,15 @@ func angleToVector(_ angle: Tensor<Float>) -> Tensor<Float> {
 func step(phase: Int) {
   var currentGrid = grid[phase]
   // Perceive
-  let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3]) + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
+  let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
+    + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
   let sensingOffset = angleToVector(senseDirection) * senseDistance
   let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
   // TODO: This wrapping around negative values needs to be fixed.
-  let sensingIndices = abs(Tensor<Int32>(sensingPosition)) % gridShape
-  let sensedValues = currentGrid.expandingShape(at: 2).dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
+  let sensingIndices = abs(Tensor<Int32>(sensingPosition))
+    % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
+  let sensedValues = currentGrid.expandingShape(at: 2)
+    .dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
   
   // Move
   let lowValues = sensedValues.argmin(squeezingAxis: -1)
@@ -69,7 +73,9 @@ func step(phase: Int) {
   
   // Deposit
   // TODO: This wrapping around negative values needs to be fixed.
-  let depositIndices = abs(Tensor<Int32>(positions)) % gridShape
+  // TODO: XLA errors out with "Invalid argument: Automatic shape inference not supported: s32[1024,2] and s32[1,1,2]"
+  // if the manual shape expansion isn't present here.
+  let depositIndices = abs(Tensor<Int32>(positions)) % (gridShape.expandingShape(at: 0))
   let deposits = scatterValues.dimensionScattering(atIndices: depositIndices, shape: gridShape)
   currentGrid += deposits
   
@@ -85,13 +91,15 @@ let start = Date()
 
 var steps: [Tensor<Float>] = []
 for stepIndex in 0..<stepCount {
-  print("Step: \(stepIndex)")
   step(phase: stepIndex % 2)
   LazyTensorBarrier()
-  steps.append(grid[0].expandingShape(at: 2) * 255.0)
+  if captureImage {
+    steps.append(grid[0].expandingShape(at: 2) * 255.0)
+  }
 }
 
 print("Total calculation time: \(String(format: "%.4f", Date().timeIntervalSince(start))) seconds")
 
-
-try steps.saveAnimatedImage(directory: "output", name: "physarum", delay: 1)
+if captureImage {
+  try steps.saveAnimatedImage(directory: "output", name: "physarum", delay: 1)
+}
