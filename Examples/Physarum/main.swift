@@ -16,7 +16,6 @@ import Foundation
 import ModelSupport
 import TensorFlow
 
-let stepCount = 100
 let gridSize = 512
 let particleCount = 1024
 let senseAngle = 0.20 * Float.pi
@@ -25,16 +24,9 @@ let evaporationRate: Float = 0.95
 let moveAngle = 0.1 * Float.pi
 let moveStep: Float = 2.0
 let channelSize = 1
-let captureImage = true
 
 let device = Device.defaultTFEager
 // let device = Device.defaultXLA
-
-var grid = Tensor<Float>(zeros: [2, gridSize, gridSize], on: device)
-var positions = Tensor<Float>(randomUniform: [particleCount, 2], on: device) * Float(gridSize)
-var headings = Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi
-let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)], on: device)
-let scatterValues = Tensor<Float>(ones: [particleCount], on: device)
 
 extension Tensor where Scalar: Numeric {
   func mask(condition: (Tensor) -> Tensor<Bool>) -> Tensor {
@@ -48,8 +40,53 @@ func angleToVector(_ angle: Tensor<Float>) -> Tensor<Float> {
   return Tensor(stacking: [cos(angle), sin(angle)], alongAxis: -1)
 }
 
-func step(phase: Int) {
-  var currentGrid = grid[phase]
+protocol TurnRule {
+  func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float>
+}
+
+struct LearnedTurnRule: Layer, TurnRule {
+  var fc1 = Dense<Float>(inputSize: 3, outputSize: 16, activation: relu)
+  var fc2 = Dense<Float>(inputSize: 16, outputSize: 16, activation: relu)
+  var fc3 = Dense<Float>(inputSize: 16, outputSize: 1)
+
+  @differentiable
+  func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
+    return input.sequenced(through: fc1, fc2, fc3).squeezingShape(at: 1)
+  }
+}
+
+struct HeuristicTurnRule: ParameterlessLayer, TurnRule {
+  public typealias TangentVector = EmptyTangentVector
+
+  @differentiable
+  func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
+    return withoutDerivative(at: input) { _ in
+      let lowValues = input.argmin(squeezingAxis: -1)
+      let highValues = input.argmax(squeezingAxis: -1)
+      let middleMask = lowValues.mask { $0 .== 1 }
+      let middleDistribution = Tensor<Float>(randomUniform: [particleCount], on: device)
+      let randomTurn = middleDistribution.mask { $0 .< 0.1 } * Tensor<Float>(middleMask)
+      return Tensor<Float>(highValues - 1) * Tensor<Float>(1 - middleMask) + randomTurn
+    }
+  }
+}
+
+let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)], on: device)
+let scatterValues = Tensor<Float>(ones: [particleCount], on: device)
+
+func initializeSimulation() -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
+  return (grid: Tensor<Float>(zeros: [gridSize, gridSize], on: device),
+          positions: Tensor<Float>(randomUniform: [particleCount, 2], on: device) * Float(gridSize),
+          headings: Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi)
+}
+
+@differentiable
+func simulationStep(
+  turnRule: TurnRule, inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
+) -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
+  var currentGrid = inputGrid
+  var positions = inputPositions
+  var headings = inputHeadings
   // Perceive
   let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
     + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
@@ -58,48 +95,78 @@ func step(phase: Int) {
   // TODO: This wrapping around negative values needs to be fixed.
   let sensingIndices = abs(Tensor<Int32>(sensingPosition))
     % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
-  let sensedValues = currentGrid.expandingShape(at: 2)
+  let perceptions = currentGrid.expandingShape(at: 2)
     .dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
   
   // Move
-  let lowValues = sensedValues.argmin(squeezingAxis: -1)
-  let highValues = sensedValues.argmax(squeezingAxis: -1)
-  let middleMask = lowValues.mask { $0 .== 1 }
-  let middleDistribution = Tensor<Float>(randomUniform: [particleCount], on: device)
-  let randomTurn = middleDistribution.mask { $0 .< 0.1 } * Tensor<Float>(middleMask)
-  let turn = Tensor<Float>(highValues - 1) * Tensor<Float>(1 - middleMask) + randomTurn
-  headings += (turn * moveAngle)
-  positions += angleToVector(headings) * moveStep
+  let turn = turnRule(perceptions)
+  headings = headings + (turn * moveAngle)
+  positions = positions + angleToVector(headings) * moveStep
   
   // Deposit
   // TODO: This wrapping around negative values needs to be fixed.
   // TODO: XLA errors out with "Invalid argument: Automatic shape inference not supported: s32[1024,2] and s32[1,1,2]"
   // if the manual shape expansion isn't present here.
-  let depositIndices = abs(Tensor<Int32>(positions)) % (gridShape.expandingShape(at: 0))
+  let depositIndices = withoutDerivative(at: inputGrid) {_ in
+    abs(Tensor<Int32>(positions)) % (gridShape.expandingShape(at: 0))
+  }
   let deposits = scatterValues.dimensionScattering(atIndices: depositIndices, shape: gridShape)
-  currentGrid += deposits
+  currentGrid = currentGrid + deposits
   
   // Diffuse
   currentGrid = currentGrid.expandingShape(at: 0).expandingShape(at: 3)
   currentGrid = currentGrid.padded(forSizes: [(0, 0), (1, 1), (1, 1), (0, 0)], mode: .reflect)
   currentGrid = avgPool2D(currentGrid, filterSize: (1, 3, 3, 1), strides: (1, 1, 1, 1), padding: .valid)
   currentGrid = currentGrid * evaporationRate
-  grid[1 - phase] = currentGrid.squeezingShape(at: 3).squeezingShape(at: 0)
+  LazyTensorBarrier()
+
+  return (grid: currentGrid.squeezingShape(at: 3).squeezingShape(at: 0), positions: positions, headings: headings)
 }
 
-let start = Date()
+func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout LearnedTurnRule) {
+  var (grid, positions, headings) = initializeSimulation()
+  var optimizer = SGD(for: turnRule, learningRate: 2e-3)
+  optimizer = SGD(copying: optimizer, to: device)
 
-var steps: [Tensor<Float>] = []
-for stepIndex in 0..<stepCount {
-  step(phase: stepIndex % 2)
-  LazyTensorBarrier()
-  if captureImage {
-    steps.append(grid[0].expandingShape(at: 2) * 255.0)
+  for iteration in 0..<iterations {
+    let (loss, ruleGradient) = valueWithGradient(at: turnRule) { model -> Tensor<Float> in
+      for _ in 0..<stepCount {
+        (grid, positions, headings) = simulationStep(
+          turnRule: turnRule, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+      }
+      return 1.0 - grid.variance()
+    }
+    print("Iteration: \(iteration), loss: \(loss)")
+    optimizer.update(&turnRule, along: ruleGradient)
+    LazyTensorBarrier()
   }
 }
 
+func capturePhysarumSimulation(stepCount: Int, turnRule: TurnRule, name: String) throws {
+  var (grid, positions, headings) = initializeSimulation()
+
+  var steps: [Tensor<Float>] = []
+  for _ in 0..<stepCount {
+    (grid, positions, headings) = simulationStep(
+      turnRule: turnRule, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+
+    steps.append(grid.expandingShape(at: 2) * 255.0)
+  }
+
+  try steps.saveAnimatedImage(directory: "output", name: name, delay: 1)
+}
+
+
+var turnRule = LearnedTurnRule()
+turnRule.move(to: device)
+
+//let turnRule = HeuristicTurnRule()
+
+let start = Date()
+trainPhysarumSimulation(iterations: 100, stepCount: 100, turnRule: &turnRule)
 print("Total calculation time: \(String(format: "%.4f", Date().timeIntervalSince(start))) seconds")
 
-if captureImage {
-  try steps.saveAnimatedImage(directory: "output", name: "physarum", delay: 1)
-}
+print("Saving animation...")
+try! capturePhysarumSimulation(stepCount: 100, turnRule: turnRule, name: "learned_physarum")
+print("Animation saved.")
+
