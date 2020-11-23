@@ -41,13 +41,14 @@ func angleToVector(_ angle: Tensor<Float>) -> Tensor<Float> {
 }
 
 protocol TurnRule {
+  @differentiable
   func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float>
 }
 
 struct LearnedTurnRule: Layer, TurnRule {
   var fc1 = Dense<Float>(inputSize: 3, outputSize: 16, activation: relu)
   var fc2 = Dense<Float>(inputSize: 16, outputSize: 16, activation: relu)
-  var fc3 = Dense<Float>(inputSize: 16, outputSize: 1)
+  var fc3 = Dense<Float>(inputSize: 16, outputSize: 1, activation: identity, useBias: false, weightInitializer: zeros())
 
   @differentiable
   func callAsFunction(_ input: Tensor<Float>) -> Tensor<Float> {
@@ -82,11 +83,12 @@ func initializeSimulation() -> (grid: Tensor<Float>, positions: Tensor<Float>, h
 
 @differentiable
 func simulationStep(
-  turnRule: TurnRule, inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
+  turnRule: @differentiable (Tensor<Float>) -> Tensor<Float>, inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
 ) -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
   var currentGrid = inputGrid
   var positions = inputPositions
   var headings = inputHeadings
+  
   // Perceive
   let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
     + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
@@ -124,17 +126,19 @@ func simulationStep(
 }
 
 func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout LearnedTurnRule) {
-  var (grid, positions, headings) = initializeSimulation()
   var optimizer = SGD(for: turnRule, learningRate: 2e-3)
   optimizer = SGD(copying: optimizer, to: device)
 
   for iteration in 0..<iterations {
+    var (grid, positions, headings) = initializeSimulation()
     let (loss, ruleGradient) = valueWithGradient(at: turnRule) { model -> Tensor<Float> in
       for _ in 0..<stepCount {
         (grid, positions, headings) = simulationStep(
-          turnRule: turnRule, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+          turnRule: model.callAsFunction, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
       }
-      return 1.0 - grid.variance()
+      print("Variance: \(grid.variance())")
+//      return meanSquaredError(predicted: grid, expected: Tensor(zerosLike: grid))
+      return -grid.variance()
     }
     print("Iteration: \(iteration), loss: \(loss)")
     optimizer.update(&turnRule, along: ruleGradient)
@@ -142,13 +146,13 @@ func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout Le
   }
 }
 
-func capturePhysarumSimulation(stepCount: Int, turnRule: TurnRule, name: String) throws {
+func capturePhysarumSimulation(stepCount: Int, turnRule: LearnedTurnRule, name: String) throws {
   var (grid, positions, headings) = initializeSimulation()
 
   var steps: [Tensor<Float>] = []
   for _ in 0..<stepCount {
     (grid, positions, headings) = simulationStep(
-      turnRule: turnRule, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+      turnRule: turnRule.callAsFunction, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
 
     steps.append(grid.expandingShape(at: 2) * 255.0)
   }
@@ -157,16 +161,16 @@ func capturePhysarumSimulation(stepCount: Int, turnRule: TurnRule, name: String)
 }
 
 
-var turnRule = LearnedTurnRule()
-turnRule.move(to: device)
+var learningRule = LearnedTurnRule()
+learningRule.move(to: device)
 
 //let turnRule = HeuristicTurnRule()
 
 let start = Date()
-trainPhysarumSimulation(iterations: 100, stepCount: 100, turnRule: &turnRule)
+trainPhysarumSimulation(iterations: 100, stepCount: 200, turnRule: &learningRule)
 print("Total calculation time: \(String(format: "%.4f", Date().timeIntervalSince(start))) seconds")
 
 print("Saving animation...")
-try! capturePhysarumSimulation(stepCount: 100, turnRule: turnRule, name: "learned_physarum")
+try! capturePhysarumSimulation(stepCount: 100, turnRule: learningRule, name: "learned_physarum")
 print("Animation saved.")
 
