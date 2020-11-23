@@ -81,7 +81,7 @@ func initializeSimulation() -> (grid: Tensor<Float>, positions: Tensor<Float>, h
           headings: Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi)
 }
 
-extension TurnRule {
+extension LearnedTurnRule {
   @differentiable
   func simulationStep(
     inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
@@ -96,8 +96,10 @@ extension TurnRule {
     let sensingOffset = angleToVector(senseDirection) * senseDistance
     let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
     // TODO: This wrapping around negative values needs to be fixed.
-    let sensingIndices = abs(Tensor<Int32>(sensingPosition))
+    let sensingIndices = withoutDerivative(at: inputGrid) {_ in
+      abs(Tensor<Int32>(sensingPosition))
       % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
+    }
     let perceptions = currentGrid.expandingShape(at: 2)
       .dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
     
@@ -132,8 +134,8 @@ func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout Le
   optimizer = SGD(copying: optimizer, to: device)
 
   for iteration in 0..<iterations {
-    var (grid, positions, headings) = initializeSimulation()
     let (loss, ruleGradient) = valueWithGradient(at: turnRule) { model -> Tensor<Float> in
+      var (grid, positions, headings) = initializeSimulation()
       for _ in 0..<stepCount {
         (grid, positions, headings) = model.simulationStep(
           inputGrid: grid, inputPositions: positions, inputHeadings: headings)
