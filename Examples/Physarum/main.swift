@@ -81,48 +81,50 @@ func initializeSimulation() -> (grid: Tensor<Float>, positions: Tensor<Float>, h
           headings: Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi)
 }
 
-@differentiable
-func simulationStep(
-  turnRule: @differentiable (Tensor<Float>) -> Tensor<Float>, inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
-) -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
-  var currentGrid = inputGrid
-  var positions = inputPositions
-  var headings = inputHeadings
-  
-  // Perceive
-  let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
-    + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
-  let sensingOffset = angleToVector(senseDirection) * senseDistance
-  let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
-  // TODO: This wrapping around negative values needs to be fixed.
-  let sensingIndices = abs(Tensor<Int32>(sensingPosition))
-    % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
-  let perceptions = currentGrid.expandingShape(at: 2)
-    .dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
-  
-  // Move
-  let turn = turnRule(perceptions)
-  headings = headings + (turn * moveAngle)
-  positions = positions + angleToVector(headings) * moveStep
-  
-  // Deposit
-  // TODO: This wrapping around negative values needs to be fixed.
-  // TODO: XLA errors out with "Invalid argument: Automatic shape inference not supported: s32[1024,2] and s32[1,1,2]"
-  // if the manual shape expansion isn't present here.
-  let depositIndices = withoutDerivative(at: inputGrid) {_ in
-    abs(Tensor<Int32>(positions)) % (gridShape.expandingShape(at: 0))
-  }
-  let deposits = scatterValues.dimensionScattering(atIndices: depositIndices, shape: gridShape)
-  currentGrid = currentGrid + deposits
-  
-  // Diffuse
-  currentGrid = currentGrid.expandingShape(at: 0).expandingShape(at: 3)
-  currentGrid = currentGrid.padded(forSizes: [(0, 0), (1, 1), (1, 1), (0, 0)], mode: .reflect)
-  currentGrid = avgPool2D(currentGrid, filterSize: (1, 3, 3, 1), strides: (1, 1, 1, 1), padding: .valid)
-  currentGrid = currentGrid * evaporationRate
-  LazyTensorBarrier()
+extension TurnRule {
+  @differentiable
+  func simulationStep(
+    inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
+  ) -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
+    var currentGrid = inputGrid
+    var positions = inputPositions
+    var headings = inputHeadings
+    
+    // Perceive
+    let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
+      + Tensor<Float>([-moveAngle, 0.0, moveAngle], on: device)
+    let sensingOffset = angleToVector(senseDirection) * senseDistance
+    let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
+    // TODO: This wrapping around negative values needs to be fixed.
+    let sensingIndices = abs(Tensor<Int32>(sensingPosition))
+      % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
+    let perceptions = currentGrid.expandingShape(at: 2)
+      .dimensionGathering(atIndices: sensingIndices).squeezingShape(at: 2)
+    
+    // Move
+    let turn = self(perceptions)
+    headings = headings + (turn * moveAngle)
+    positions = positions + angleToVector(headings) * moveStep
+    
+    // Deposit
+    // TODO: This wrapping around negative values needs to be fixed.
+    // TODO: XLA errors out with "Invalid argument: Automatic shape inference not supported: s32[1024,2] and s32[1,1,2]"
+    // if the manual shape expansion isn't present here.
+    let depositIndices = withoutDerivative(at: inputGrid) {_ in
+      abs(Tensor<Int32>(positions)) % (gridShape.expandingShape(at: 0))
+    }
+    let deposits = scatterValues.dimensionScattering(atIndices: depositIndices, shape: gridShape)
+    currentGrid = currentGrid + deposits
+    
+    // Diffuse
+    currentGrid = currentGrid.expandingShape(at: 0).expandingShape(at: 3)
+    currentGrid = currentGrid.padded(forSizes: [(0, 0), (1, 1), (1, 1), (0, 0)], mode: .reflect)
+    currentGrid = avgPool2D(currentGrid, filterSize: (1, 3, 3, 1), strides: (1, 1, 1, 1), padding: .valid)
+    currentGrid = currentGrid * evaporationRate
+    LazyTensorBarrier()
 
-  return (grid: currentGrid.squeezingShape(at: 3).squeezingShape(at: 0), positions: positions, headings: headings)
+    return (grid: currentGrid.squeezingShape(at: 3).squeezingShape(at: 0), positions: positions, headings: headings)
+  }
 }
 
 func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout LearnedTurnRule) {
@@ -133,8 +135,8 @@ func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout Le
     var (grid, positions, headings) = initializeSimulation()
     let (loss, ruleGradient) = valueWithGradient(at: turnRule) { model -> Tensor<Float> in
       for _ in 0..<stepCount {
-        (grid, positions, headings) = simulationStep(
-          turnRule: model.callAsFunction, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+        (grid, positions, headings) = model.simulationStep(
+          inputGrid: grid, inputPositions: positions, inputHeadings: headings)
       }
       print("Variance: \(grid.variance())")
 //      return meanSquaredError(predicted: grid, expected: Tensor(zerosLike: grid))
@@ -151,8 +153,8 @@ func capturePhysarumSimulation(stepCount: Int, turnRule: LearnedTurnRule, name: 
 
   var steps: [Tensor<Float>] = []
   for _ in 0..<stepCount {
-    (grid, positions, headings) = simulationStep(
-      turnRule: turnRule.callAsFunction, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+    (grid, positions, headings) = turnRule.simulationStep(
+      inputGrid: grid, inputPositions: positions, inputHeadings: headings)
 
     steps.append(grid.expandingShape(at: 2) * 255.0)
   }
