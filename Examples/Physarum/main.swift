@@ -28,6 +28,24 @@ let channelSize = 1
 let device = Device.defaultTFEager
 // let device = Device.defaultXLA
 
+struct SimulationState: Differentiable {
+  var grid: Tensor<Float>
+  var positions: Tensor<Float>
+  var headings: Tensor<Float>
+
+  init(grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
+    self.grid = grid
+    self.positions = positions
+    self.headings = headings
+  }
+
+  init(gridSize: Int, particleCount: Int, device: Device) {
+    grid = Tensor<Float>(zeros: [gridSize, gridSize], on: device)
+    positions = Tensor<Float>(randomUniform: [particleCount, 2], on: device) * Float(gridSize)
+    headings = Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi
+  }
+}
+
 extension Tensor where Scalar: Numeric {
   func mask(condition: (Tensor) -> Tensor<Bool>) -> Tensor {
     let satisfied = condition(self)
@@ -80,19 +98,11 @@ struct HeuristicTurnRule: ParameterlessLayer, TurnRule {
 let gridShape = Tensor<Int32>(shape: [2], scalars: [Int32(gridSize), Int32(gridSize)], on: device)
 let scatterValues = Tensor<Float>(ones: [particleCount], on: device)
 
-func initializeSimulation() -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
-  return (grid: Tensor<Float>(zeros: [gridSize, gridSize], on: device),
-          positions: Tensor<Float>(randomUniform: [particleCount, 2], on: device) * Float(gridSize),
-          headings: Tensor<Float>(randomUniform: [particleCount], on: device) * 2.0 * Float.pi)
-}
-
 @differentiable
-func simulationStep(
-  turnRule: LearnedTurnRule, inputGrid: Tensor<Float>, inputPositions: Tensor<Float>, inputHeadings: Tensor<Float>
-) -> (grid: Tensor<Float>, positions: Tensor<Float>, headings: Tensor<Float>) {
-  var currentGrid = inputGrid
-  var positions = inputPositions
-  var headings = inputHeadings
+func simulationStep(turnRule: LearnedTurnRule, state: SimulationState) -> SimulationState {
+  var currentGrid = state.grid
+  var positions = state.positions
+  var headings = state.headings
   
   // Perceive
   let senseDirection = headings.expandingShape(at: 1).broadcasted(to: [particleCount, 3])
@@ -100,6 +110,7 @@ func simulationStep(
   let sensingOffset = angleToVector(senseDirection) * senseDistance
   let sensingPosition = positions.expandingShape(at: 1) + sensingOffset
   // TODO: This wrapping around negative values needs to be fixed.
+
   let sensingIndices = withoutDerivative(at: turnRule) {_ in
     abs(Tensor<Int32>(sensingPosition))
     % (gridShape.expandingShape(at: 0).expandingShape(at: 0))
@@ -129,7 +140,7 @@ func simulationStep(
   currentGrid = currentGrid * evaporationRate
   LazyTensorBarrier()
 
-  return (grid: currentGrid.squeezingShape(at: 3).squeezingShape(at: 0), positions: positions, headings: headings)
+  return SimulationState(grid: currentGrid.squeezingShape(at: 3).squeezingShape(at: 0), positions: positions, headings: headings)
 }
 
 func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout LearnedTurnRule) {
@@ -138,13 +149,12 @@ func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout Le
 
   for iteration in 0..<iterations {
     let (loss, ruleGradient) = valueWithGradient(at: turnRule) { model -> Tensor<Float> in
-      var (grid, positions, headings) = initializeSimulation()
+      var state = SimulationState(gridSize: gridSize, particleCount: particleCount, device: device)
       for _ in 0..<stepCount {
-        (grid, positions, headings) = simulationStep(
-          turnRule: model, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+        state = simulationStep(turnRule: model, state: state)
       }
-      print("Variance: \(grid.variance())")
-      return -grid.variance()
+      print("Variance: \(state.grid.variance())")
+      return -state.grid.variance()
     }
     print("Iteration: \(iteration), loss: \(loss)")
     print("Gradient: \(ruleGradient)")
@@ -154,14 +164,13 @@ func trainPhysarumSimulation(iterations: Int, stepCount: Int, turnRule: inout Le
 }
 
 func capturePhysarumSimulation(stepCount: Int, turnRule: LearnedTurnRule, name: String) throws {
-  var (grid, positions, headings) = initializeSimulation()
+  var state = SimulationState(gridSize: gridSize, particleCount: particleCount, device: device)
 
   var steps: [Tensor<Float>] = []
   for _ in 0..<stepCount {
-    (grid, positions, headings) = simulationStep(
-      turnRule: turnRule, inputGrid: grid, inputPositions: positions, inputHeadings: headings)
+    state = simulationStep(turnRule: turnRule, state: state)
 
-    steps.append(grid.expandingShape(at: 2) * 255.0)
+    steps.append(state.grid.expandingShape(at: 2) * 255.0)
   }
 
   try steps.saveAnimatedImage(directory: "output", name: name, delay: 1)
